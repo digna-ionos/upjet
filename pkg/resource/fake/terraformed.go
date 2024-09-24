@@ -14,6 +14,7 @@ import (
 // Observable is mock Observable.
 type Observable struct {
 	Observation                 map[string]any
+	SetObservationStub          func(data map[string]any) error
 	AdditionalConnectionDetails map[string][]byte
 	ID                          string
 }
@@ -25,6 +26,10 @@ func (o *Observable) GetObservation() (map[string]any, error) {
 
 // SetObservation is a mock.
 func (o *Observable) SetObservation(data map[string]any) error {
+	if o.SetObservationStub != nil {
+		return o.SetObservationStub(data)
+	}
+
 	o.Observation = data
 	return nil
 }

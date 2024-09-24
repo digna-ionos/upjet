@@ -6,6 +6,9 @@ package controller
 
 import (
 	"context"
+	"github.com/crossplane/upjet/pkg/resource/json"
+	"github.com/crossplane/upjet/pkg/schema/traverser"
+	"github.com/stretchr/testify/assert"
 	"testing"
 	"time"
 
@@ -366,6 +369,157 @@ func TestTerraformPluginSDKUpdate(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestTerraformPluginSDKUpdateSingletonList(t *testing.T) {
+	type args struct {
+		r   Resource
+		cfg *config.Resource
+		obj fake.Terraformed
+	}
+	type want struct {
+		err error
+	}
+	cases := map[string]struct {
+		args
+		want
+	}{
+		"WithoutConversions - Fail": {
+			args: args{
+				r: mockResource{
+					ApplyFn: func(ctx context.Context, s *tf.InstanceState, d *tf.InstanceDiff, meta interface{}) (*tf.InstanceState, diag.Diagnostics) {
+						return &tf.InstanceState{ID: "example-id",
+							Attributes: map[string]string{
+								"name":        "example",
+								"list.#":      "1",
+								"list.0.item": "elem1",
+							}}, nil
+					},
+				},
+				cfg: newSingletonListResource(nil),
+				obj: fake.Terraformed{
+					Parameterizable: fake.Parameterizable{
+						Parameters: map[string]any{
+							"name": "example",
+							"list": map[string]interface{}{"item": "elem1"},
+						},
+					},
+					Observable: fake.Observable{
+						Observation: map[string]any{},
+						SetObservationStub: func(data map[string]any) error {
+							p, err := json.TFParser.Marshal(data)
+							if err != nil {
+								return err
+							}
+
+							obs := struct {
+								Name string `json:"name,omitempty" tf:"name,omitempty"`
+								List *struct {
+									Item *string `json:"item,omitempty" tf:"item,omitempty"`
+								} `json:"list,omitempty" tf:"list,omitempty"`
+							}{}
+
+							return json.TFParser.Unmarshal(p, &obs)
+						},
+					},
+				},
+			},
+			want: want{
+				err: errors.New("failed to set observation: "),
+			},
+		},
+		"WithConversion - Success": {
+			args: args{
+				r: mockResource{
+					ApplyFn: func(ctx context.Context, s *tf.InstanceState, d *tf.InstanceDiff, meta interface{}) (*tf.InstanceState, diag.Diagnostics) {
+						return &tf.InstanceState{ID: "example-id",
+							Attributes: map[string]string{
+								"name":        "example",
+								"list.#":      "1",
+								"list.0.item": "elem1",
+							}}, nil
+					},
+				},
+				cfg: newSingletonListResource([]config.TerraformConversion{config.NewTFSingletonConversion()}),
+				obj: fake.Terraformed{
+					Parameterizable: fake.Parameterizable{
+						Parameters: map[string]any{
+							"name": "example",
+							"list": map[string]interface{}{"item": "elem1"},
+						},
+					},
+					Observable: fake.Observable{
+						Observation: map[string]any{},
+						SetObservationStub: func(data map[string]any) error {
+							p, err := json.TFParser.Marshal(data)
+							if err != nil {
+								return err
+							}
+
+							obs := struct {
+								Name string `json:"name,omitempty" tf:"name,omitempty"`
+								List *struct {
+									Item *string `json:"item,omitempty" tf:"item,omitempty"`
+								} `json:"list,omitempty" tf:"list,omitempty"`
+							}{}
+
+							return json.TFParser.Unmarshal(p, &obs)
+						},
+					},
+				},
+			},
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			listEmbedder := &config.SingletonListEmbedder{}
+			listEmbedder.SetResource(tc.args.cfg)
+			if err := traverser.TFResourceSchema(map[string]*schema.Resource{"test": tc.args.cfg.TerraformResource}).Traverse(listEmbedder); err != nil {
+				t.Errorf("cannot sync the MaxItems constraints between the Go schema and the JSON schema")
+			}
+
+			terraformPluginSDKExternal := prepareTerraformPluginSDKExternal(tc.args.r, tc.args.cfg)
+			_, err := terraformPluginSDKExternal.Update(context.TODO(), &tc.args.obj)
+			if tc.want.err == nil && err != nil {
+				assert.Nil(t, err)
+			} else {
+				assert.NotNil(t, err)
+				assert.Contains(t, err.Error(), tc.want.err.Error())
+			}
+		})
+	}
+}
+
+func newSingletonListResource(tfConversions []config.TerraformConversion) *config.Resource {
+	tfResource := &schema.Resource{
+		Timeouts: &schema.ResourceTimeout{
+			Create: &timeout,
+			Read:   &timeout,
+			Update: &timeout,
+			Delete: &timeout,
+		},
+		Schema: map[string]*schema.Schema{
+			"name": {
+				Type:     schema.TypeString,
+				Required: true,
+			},
+			"list": {
+				Type:     schema.TypeList,
+				Optional: true,
+				MaxItems: 1,
+				Elem: &schema.Resource{
+					Schema: map[string]*schema.Schema{
+						"item": {
+							Type: schema.TypeString,
+						},
+					},
+				},
+			},
+		},
+	}
+	res := config.DefaultResource("aws_singleton_list", tfResource, nil, nil)
+	res.TerraformConversions = tfConversions
+	return res
 }
 
 func TestTerraformPluginSDKDelete(t *testing.T) {
